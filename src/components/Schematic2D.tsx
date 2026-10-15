@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BuildingInputs, WallSide } from '../types';
 import { Layers, ZoomIn } from 'lucide-react';
+import { calculateMonoRoofSlopeDetails } from '../utils/calculator';
 
 interface Schematic2DProps {
   inputs: BuildingInputs;
@@ -53,11 +54,12 @@ export const Schematic2D: React.FC<Schematic2DProps> = ({ inputs, diagonal }) =>
   const wallLengthM = (selectedWall === 'front' || selectedWall === 'back') ? inputs.length : inputs.width;
   const wallOpenings = inputs.openings.filter(o => o.wall === selectedWall);
 
-  // Wall heights
-  const isUneven = inputs.roofType === 'mono' && inputs.isUnevenWalls;
-  const hLow = isUneven ? Math.min(inputs.wallHeight, inputs.wallHeightHigh) : inputs.wallHeight;
-  const hHigh = isUneven ? Math.max(inputs.wallHeight, inputs.wallHeightHigh) : inputs.wallHeight;
-  const deltaH = (hHigh - hLow).toFixed(2);
+  // Wall heights & Mono Slope details
+  const monoDetails = calculateMonoRoofSlopeDetails(inputs);
+  const isUneven = inputs.roofType === 'mono' && monoDetails.hasUnevenWalls;
+  const hLow = monoDetails.hLow;
+  const hHigh = monoDetails.hHigh;
+  const deltaH = monoDetails.deltaH.toFixed(2);
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col justify-between">
@@ -794,63 +796,144 @@ export const Schematic2D: React.FC<Schematic2DProps> = ({ inputs, diagonal }) =>
             <text x="35" y="325" fill="#64748b" fontSize="9" fontFamily="monospace">Рівень фундаменту (±0.000)</text>
 
             {(() => {
-              const bW = 280;
+              const bW = 320;
               const bX = (svgWidth - bW) / 2;
 
               if (inputs.roofType === 'mono') {
-                // UNEVEN WALLS OR REGULAR MONO
-                const lowWallH = isUneven ? (hLow / 2.8) * 100 : 90;
-                const highWallH = isUneven ? (hHigh / 2.8) * 100 : 130;
-                
-                const leftWallH = inputs.highWallSide === 'back' ? highWallH : lowWallH;
-                const rightWallH = inputs.highWallSide === 'back' ? lowWallH : highWallH;
+                const wallThickPx = 18;
+                // Determine high and low wall placement
+                const isLeftHigher = monoDetails.highWallSide === 'back' || monoDetails.highWallSide === 'left';
+                const leftHVal = isLeftHigher ? hHigh : hLow;
+                const rightHVal = isLeftHigher ? hLow : hHigh;
+
+                // Scale wall heights
+                const maxHVal = Math.max(leftHVal, rightHVal, 2.0);
+                const scaleH = 135 / maxHVal;
+                const leftWallH = leftHVal * scaleH;
+                const rightWallH = rightHVal * scaleH;
 
                 const leftY = 310 - leftWallH;
                 const rightY = 310 - rightWallH;
 
+                // Double Top Plates (2 stacked boards, 5px each = 10px total)
+                const plateH = 5;
+                const leftStudTopY = leftY + 2 * plateH;
+                const rightStudTopY = rightY + 2 * plateH;
+
+                // Pivot points: internal corner of wall at lower edge of upper top plate (division line between 2 plates)
+                const p1X = bX + wallThickPx;
+                const p1Y = leftY + plateH; // dividing line on left wall
+
+                const p2X = bX + bW - wallThickPx;
+                const p2Y = rightY + plateH; // dividing line on right wall
+
+                // Rafter slope through the two internal support points
+                const slope = (p2Y - p1Y) / (p2X - p1X);
+                const angleRad = Math.atan(slope);
+
+                const overhangPx = 38;
+                const rafterStartX = bX - overhangPx;
+                const rafterStartY = p1Y + slope * (rafterStartX - p1X);
+                const rafterEndX = bX + bW + overhangPx;
+                const rafterEndY = p1Y + slope * (rafterEndX - p1X);
+
+                // Normal vector for rafter thickness (12px beam)
+                const rafterThick = 12;
+                const normX = -Math.sin(angleRad) * rafterThick;
+                const normY = -Math.cos(angleRad) * rafterThick;
+
+                const dimInnerY = Math.max(leftY, rightY) + 24;
+
                 return (
                   <g>
-                    {/* Left Wall */}
-                    <rect x={bX} y={leftY} width="12" height={leftWallH} fill="#b76a44" stroke="#78350f" />
-                    {/* Right Wall */}
-                    <rect x={bX + bW - 12} y={rightY} width="12" height={rightWallH} fill="#b76a44" stroke="#78350f" />
+                    {/* Left Wall Studs & Sheathing */}
+                    <rect x={bX} y={leftStudTopY} width={wallThickPx} height={310 - leftStudTopY} fill="#b76a44" stroke="#78350f" />
+                    {/* Right Wall Studs & Sheathing */}
+                    <rect x={bX + bW - wallThickPx} y={rightStudTopY} width={wallThickPx} height={310 - rightStudTopY} fill="#b76a44" stroke="#78350f" />
 
-                    {/* Double Top Plates on both walls */}
-                    <rect x={bX - 2} y={leftY - 4} width="16" height="4" fill="#fbbf24" />
-                    <rect x={bX + bW - 14} y={rightY - 4} width="16" height="4" fill="#fbbf24" />
+                    {/* Double Top Plate - Left Wall (Lower Board & Upper Board) */}
+                    <rect x={bX} y={leftY + plateH} width={wallThickPx} height={plateH} fill="#fbbf24" stroke="#d97706" strokeWidth="0.8" />
+                    <rect x={bX} y={leftY} width={wallThickPx} height={plateH} fill="#fde68a" stroke="#d97706" strokeWidth="0.8" />
 
-                    {/* Slanted Rafter spanning both walls */}
-                    <line
-                      x1={bX - 25}
-                      y1={leftY - (leftY < rightY ? 8 : -8)}
-                      x2={bX + bW + 25}
-                      y2={rightY - (rightY < leftY ? 8 : -8)}
-                      stroke="#f59e0b"
-                      strokeWidth="7"
-                      strokeLinecap="round"
+                    {/* Double Top Plate - Right Wall (Lower Board & Upper Board) */}
+                    <rect x={bX + bW - wallThickPx} y={rightY + plateH} width={wallThickPx} height={plateH} fill="#fbbf24" stroke="#d97706" strokeWidth="0.8" />
+                    <rect x={bX + bW - wallThickPx} y={rightY} width={wallThickPx} height={plateH} fill="#fde68a" stroke="#d97706" strokeWidth="0.8" />
+
+                    {/* Slanted Rafter (Solid Polygon resting precisely on internal top plate corners) */}
+                    <polygon
+                      points={`
+                        ${rafterStartX},${rafterStartY}
+                        ${rafterEndX},${rafterEndY}
+                        ${rafterEndX + normX},${rafterEndY + normY}
+                        ${rafterStartX + normX},${rafterStartY + normY}
+                      `}
+                      fill="#f59e0b"
+                      stroke="#b45309"
+                      strokeWidth="1.2"
                     />
 
+                    {/* Rafter underside reference line */}
+                    <line
+                      x1={rafterStartX}
+                      y1={rafterStartY}
+                      x2={rafterEndX}
+                      y2={rafterEndY}
+                      stroke="#fbbf24"
+                      strokeWidth="1.5"
+                    />
+
+                    {/* Left support highlight circle (Внутрішній кут: нижній край верхньої обв'язки) */}
+                    <circle cx={p1X} cy={p1Y} r="14" fill="#38bdf8" fillOpacity="0.12" stroke="#38bdf8" strokeWidth="1.8" strokeDasharray="3,2" />
+                    <circle cx={p1X} cy={p1Y} r="3" fill="#38bdf8" />
+
+                    {/* Right support highlight circle (Внутрішній кут: нижній край верхньої обв'язки) */}
+                    <circle cx={p2X} cy={p2Y} r="14" fill="#38bdf8" fillOpacity="0.12" stroke="#38bdf8" strokeWidth="1.8" strokeDasharray="3,2" />
+                    <circle cx={p2X} cy={p2Y} r="3" fill="#38bdf8" />
+
+                    {/* Leader labels pointing to the internal corners as in the sketch */}
+                    <line x1={p1X} y1={p1Y + 14} x2={p1X - 25} y2={p1Y + 45} stroke="#38bdf8" strokeWidth="1" strokeDasharray="2,2" />
+                    <text x={p1X - 28} y={p1Y + 48} fill="#38bdf8" fontSize="8.5" fontFamily="monospace" textAnchor="end">
+                      Внутрішній кут: нижній край верхньої обв'язки
+                    </text>
+
+                    <line x1={p2X} y1={p2Y + 14} x2={p2X + 25} y2={p2Y + 45} stroke="#38bdf8" strokeWidth="1" strokeDasharray="2,2" />
+                    <text x={p2X + 28} y={p2Y + 48} fill="#38bdf8" fontSize="8.5" fontFamily="monospace" textAnchor="start">
+                      Внутрішній кут: нижній край верхньої обв'язки
+                    </text>
+
                     {/* Left wall height dimension */}
-                    <line x1={bX - 15} y1={leftY} x2={bX - 15} y2={310} stroke="#38bdf8" strokeWidth="1" />
-                    <text x={bX - 20} y={leftY + leftWallH / 2} fill="#38bdf8" fontSize="11" fontFamily="monospace" textAnchor="end" className="font-bold">
-                      {inputs.highWallSide === 'back' ? hHigh : hLow} м ({( (inputs.highWallSide === 'back' ? hHigh : hLow) * 100).toFixed(0)} см)
+                    <line x1={bX - 16} y1={leftY} x2={bX - 16} y2={310} stroke="#cbd5e1" strokeWidth="1" />
+                    <line x1={bX - 20} y1={leftY} x2={bX - 12} y2={leftY} stroke="#cbd5e1" strokeWidth="1" />
+                    <line x1={bX - 20} y1={310} x2={bX - 12} y2={310} stroke="#cbd5e1" strokeWidth="1" />
+                    <text x={bX - 22} y={leftY + leftWallH / 2 + 4} fill="#cbd5e1" fontSize="10" fontFamily="monospace" textAnchor="end" className="font-bold">
+                      {leftHVal.toFixed(2)} м
                     </text>
 
                     {/* Right wall height dimension */}
-                    <line x1={bX + bW + 15} y1={rightY} x2={bX + bW + 15} y2={310} stroke="#38bdf8" strokeWidth="1" />
-                    <text x={bX + bW + 20} y={rightY + rightWallH / 2} fill="#38bdf8" fontSize="11" fontFamily="monospace" textAnchor="start" className="font-bold">
-                      {inputs.highWallSide === 'back' ? hLow : hHigh} м ({( (inputs.highWallSide === 'back' ? hLow : hHigh) * 100).toFixed(0)} см)
+                    <line x1={bX + bW + 16} y1={rightY} x2={bX + bW + 16} y2={310} stroke="#cbd5e1" strokeWidth="1" />
+                    <line x1={bX + bW + 12} y1={rightY} x2={bX + bW + 20} y2={rightY} stroke="#cbd5e1" strokeWidth="1" />
+                    <line x1={bX + bW + 12} y1={310} x2={bX + bW + 20} y2={310} stroke="#cbd5e1" strokeWidth="1" />
+                    <text x={bX + bW + 22} y={rightY + rightWallH / 2 + 4} fill="#cbd5e1" fontSize="10" fontFamily="monospace" textAnchor="start" className="font-bold">
+                      {rightHVal.toFixed(2)} м
+                    </text>
+
+                    {/* Inner Clear Span Dimension (Between Internal Corners) */}
+                    <line x1={p1X} y1={dimInnerY} x2={p2X} y2={dimInnerY} stroke="#38bdf8" strokeWidth="1.2" />
+                    <line x1={p1X} y1={dimInnerY - 4} x2={p1X} y2={dimInnerY + 4} stroke="#38bdf8" strokeWidth="1.2" />
+                    <line x1={p2X} y1={dimInnerY - 4} x2={p2X} y2={dimInnerY + 4} stroke="#38bdf8" strokeWidth="1.2" />
+                    <text x={(p1X + p2X) / 2} y={dimInnerY - 4} fill="#38bdf8" fontSize="9.5" fontFamily="monospace" textAnchor="middle" className="font-bold">
+                      Внутрішній проліт між обв'язками: {monoDetails.innerSpan.toFixed(2)} м
                     </text>
 
                     {/* Delta H indicator */}
                     <line x1={bX} y1={Math.min(leftY, rightY)} x2={bX + bW} y2={Math.min(leftY, rightY)} stroke="#64748b" strokeDasharray="3,3" />
-                    <text x={bX + bW / 2} y={Math.min(leftY, rightY) - 15} fill="#fbbf24" fontSize="11" fontFamily="monospace" textAnchor="middle" className="font-bold">
-                      Перепад висот: ΔH = {deltaH} м ({((parseFloat(deltaH)) * 100).toFixed(0)} см)
+                    <text x={bX + bW / 2} y={Math.min(leftY, rightY) - 18} fill="#fbbf24" fontSize="11" fontFamily="monospace" textAnchor="middle" className="font-bold">
+                      Перепад висот: ΔH = {deltaH} м ({((parseFloat(deltaH)) * 100).toFixed(0)} см) | Кут: {inputs.roofPitchAngle}°
                     </text>
 
-                    {/* Ground distance */}
-                    <text x={bX + bW / 2} y={325} fill="#94a3b8" fontSize="10" fontFamily="monospace" textAnchor="middle">
-                      Проліт покрівлі: {inputs.width} м
+                    {/* Outer building width */}
+                    <text x={bX + bW / 2} y={328} fill="#94a3b8" fontSize="10" fontFamily="monospace" textAnchor="middle">
+                      Зовнішній габарит споруди: {monoDetails.outerSpan.toFixed(2)} м
                     </text>
                   </g>
                 );

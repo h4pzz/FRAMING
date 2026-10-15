@@ -1,23 +1,31 @@
 import { BuildingInputs, CalculationResult, LumberBillItem, NormativeAlert, HardwareBill, ThermalSummary, Opening } from '../types';
 
-export function calculateBuilding(inputs: BuildingInputs): CalculationResult {
-  const alerts: NormativeAlert[] = [];
+export interface MonoRoofSlopeDetails {
+  deltaH: number;
+  outerSpan: number;
+  innerSpan: number;
+  wallThicknessM: number;
+  slopeDirection: 'front-back' | 'left-right';
+  lowWallSide: 'front' | 'back' | 'left' | 'right';
+  highWallSide: 'front' | 'back' | 'left' | 'right';
+  hLow: number;
+  hHigh: number;
+  calculatedAngle: number;
+  hasUnevenWalls: boolean;
+}
 
-  // 1. Thickness in mm of chosen lumber
-  const lumberThickness = inputs.lumberType === 'planed40' ? 40 : inputs.lumberType === 'planed45' ? 45 : 50;
-
-  // 2. Resolve heights for each wall
+export function calculateMonoRoofSlopeDetails(inputs: BuildingInputs): MonoRoofSlopeDetails {
   let hFront = inputs.wallHeight;
   let hBack = inputs.wallHeight;
   let hLeft = inputs.wallHeight;
   let hRight = inputs.wallHeight;
 
   if (inputs.isCustomWallHeights && inputs.wallHeights) {
-    hFront = inputs.wallHeights.front || inputs.wallHeight;
-    hBack = inputs.wallHeights.back || inputs.wallHeight;
-    hLeft = inputs.wallHeights.left || ((hFront + hBack) / 2);
-    hRight = inputs.wallHeights.right || ((hFront + hBack) / 2);
-  } else if (inputs.roofType === 'mono' && inputs.isUnevenWalls) {
+    hFront = inputs.wallHeights.front ?? inputs.wallHeight;
+    hBack = inputs.wallHeights.back ?? inputs.wallHeight;
+    hLeft = inputs.wallHeights.left ?? ((hFront + hBack) / 2);
+    hRight = inputs.wallHeights.right ?? ((hFront + hBack) / 2);
+  } else if (inputs.isUnevenWalls) {
     const low = Math.min(inputs.wallHeight, inputs.wallHeightHigh || inputs.wallHeight);
     const high = Math.max(inputs.wallHeight, inputs.wallHeightHigh || inputs.wallHeight);
     if (inputs.highWallSide === 'front') {
@@ -43,32 +51,116 @@ export function calculateBuilding(inputs: BuildingInputs): CalculationResult {
     }
   }
 
+  const dHFrontBack = Math.abs(hFront - hBack);
+  const dHLeftRight = Math.abs(hLeft - hRight);
+
+  let deltaH = 0;
+  let outerSpan = inputs.width;
+  let slopeDirection: 'front-back' | 'left-right' = 'front-back';
+  let lowWallSide: 'front' | 'back' | 'left' | 'right' = 'back';
+  let highWallSide: 'front' | 'back' | 'left' | 'right' = 'front';
+  let hLow = hBack;
+  let hHigh = hFront;
+
+  if (dHFrontBack >= 0.005) {
+    deltaH = Number(dHFrontBack.toFixed(3));
+    outerSpan = inputs.width;
+    slopeDirection = 'front-back';
+    if (hFront >= hBack) {
+      highWallSide = 'front';
+      lowWallSide = 'back';
+      hHigh = hFront;
+      hLow = hBack;
+    } else {
+      highWallSide = 'back';
+      lowWallSide = 'front';
+      hHigh = hBack;
+      hLow = hFront;
+    }
+  } else if (dHLeftRight >= 0.005) {
+    deltaH = Number(dHLeftRight.toFixed(3));
+    outerSpan = inputs.length;
+    slopeDirection = 'left-right';
+    if (hRight >= hLeft) {
+      highWallSide = 'right';
+      lowWallSide = 'left';
+      hHigh = hRight;
+      hLow = hLeft;
+    } else {
+      highWallSide = 'left';
+      lowWallSide = 'right';
+      hHigh = hLeft;
+      hLow = hRight;
+    }
+  } else {
+    deltaH = 0;
+    outerSpan = inputs.width;
+    slopeDirection = 'front-back';
+    hLow = inputs.wallHeight;
+    hHigh = inputs.wallHeight;
+  }
+
+  const wallThicknessM = (inputs.studWidth || 150) / 1000;
+  // Clear span between internal edges of wall top plates (внутрішній проліт між внутрішніми кутами верхньої обв'язки)
+  const innerSpan = Math.max(0.2, Number((outerSpan - 2 * wallThicknessM).toFixed(3)));
+  const hasUnevenWalls = deltaH >= 0.005;
+
+  const calculatedAngle = hasUnevenWalls
+    ? Number(((Math.atan2(deltaH, innerSpan) * 180) / Math.PI).toFixed(1))
+    : inputs.roofPitchAngle;
+
+  return {
+    deltaH,
+    outerSpan,
+    innerSpan,
+    wallThicknessM,
+    slopeDirection,
+    lowWallSide,
+    highWallSide,
+    hLow,
+    hHigh,
+    calculatedAngle,
+    hasUnevenWalls,
+  };
+}
+
+export function calculateBuilding(inputs: BuildingInputs): CalculationResult {
+  const alerts: NormativeAlert[] = [];
+
+  // 1. Thickness in mm of chosen lumber
+  const lumberThickness = inputs.lumberType === 'planed40' ? 40 : inputs.lumberType === 'planed45' ? 45 : 50;
+
+  // 2. Resolve mono-pitch details & heights for each wall
+  const monoDetails = calculateMonoRoofSlopeDetails(inputs);
+  const deltaHeightM = monoDetails.deltaH;
+  const slopeSpan = monoDetails.outerSpan;
+  const isFrontBackDiff = monoDetails.slopeDirection === 'front-back' && monoDetails.hasUnevenWalls;
+
+  let hFront = inputs.wallHeight;
+  let hBack = inputs.wallHeight;
+  let hLeft = inputs.wallHeight;
+  let hRight = inputs.wallHeight;
+
+  if (inputs.isCustomWallHeights && inputs.wallHeights) {
+    hFront = inputs.wallHeights.front || inputs.wallHeight;
+    hBack = inputs.wallHeights.back || inputs.wallHeight;
+    hLeft = inputs.wallHeights.left || ((hFront + hBack) / 2);
+    hRight = inputs.wallHeights.right || ((hFront + hBack) / 2);
+  } else if (inputs.roofType === 'mono' && inputs.isUnevenWalls) {
+    hFront = monoDetails.highWallSide === 'front' ? monoDetails.hHigh : (monoDetails.lowWallSide === 'front' ? monoDetails.hLow : (monoDetails.hHigh + monoDetails.hLow) / 2);
+    hBack = monoDetails.highWallSide === 'back' ? monoDetails.hHigh : (monoDetails.lowWallSide === 'back' ? monoDetails.hLow : (monoDetails.hHigh + monoDetails.hLow) / 2);
+    hLeft = monoDetails.highWallSide === 'left' ? monoDetails.hHigh : (monoDetails.lowWallSide === 'left' ? monoDetails.hLow : (monoDetails.hHigh + monoDetails.hLow) / 2);
+    hRight = monoDetails.highWallSide === 'right' ? monoDetails.hHigh : (monoDetails.lowWallSide === 'right' ? monoDetails.hLow : (monoDetails.hHigh + monoDetails.hLow) / 2);
+  }
+
   const hMin = Math.min(hFront, hBack, hLeft, hRight);
   const hMax = Math.max(hFront, hBack, hLeft, hRight);
   const avgWallHeight = (hFront + hBack + hLeft + hRight) / 4;
 
-  // Automatic Slope and Angle calculation for Mono-pitch roof:
-  let deltaHeightM = 0;
-  let calculatedPitchAngle = inputs.roofPitchAngle;
-  let slopeSpan = inputs.width;
-
-  const isFrontBackDiff = Math.abs(hFront - hBack) > 0.01;
-  const isLeftRightDiff = Math.abs(hLeft - hRight) > 0.01;
-
-  if (inputs.roofType === 'mono') {
-    if (isFrontBackDiff) {
-      deltaHeightM = Number(Math.abs(hFront - hBack).toFixed(2));
-      slopeSpan = inputs.width;
-      calculatedPitchAngle = Number(((Math.atan2(deltaHeightM, slopeSpan) * 180) / Math.PI).toFixed(1));
-    } else if (isLeftRightDiff) {
-      deltaHeightM = Number(Math.abs(hLeft - hRight).toFixed(2));
-      slopeSpan = inputs.length;
-      calculatedPitchAngle = Number(((Math.atan2(deltaHeightM, slopeSpan) * 180) / Math.PI).toFixed(1));
-    } else {
-      deltaHeightM = 0;
-      calculatedPitchAngle = inputs.roofPitchAngle;
-    }
-  }
+  // Calculated Pitch Angle: accounts for support on internal corner of double top plate
+  const calculatedPitchAngle = inputs.roofType === 'mono'
+    ? (monoDetails.hasUnevenWalls ? monoDetails.calculatedAngle : inputs.roofPitchAngle)
+    : inputs.roofPitchAngle;
 
   // 3. Wall Areas
   const frontArea = inputs.length * hFront;
@@ -175,15 +267,10 @@ export function calculateBuilding(inputs: BuildingInputs): CalculationResult {
   let roofAreaGross = 0;
 
   if (inputs.roofType === 'mono') {
-    if (deltaHeightM > 0) {
-      rafterLength = Math.sqrt(slopeSpan * slopeSpan + deltaHeightM * deltaHeightM) + (2 * inputs.overhangLength);
-      const alongRoofSide = isFrontBackDiff ? inputs.length : inputs.width;
-      roofAreaGross = (alongRoofSide + 2 * inputs.overhangLength) * rafterLength;
-    } else {
-      const pitchRad = (inputs.roofPitchAngle * Math.PI) / 180;
-      rafterLength = (inputs.width / Math.cos(pitchRad)) + (2 * inputs.overhangLength);
-      roofAreaGross = (inputs.length + 2 * inputs.overhangLength) * rafterLength;
-    }
+    const pitchRad = (calculatedPitchAngle * Math.PI) / 180;
+    rafterLength = (slopeSpan / Math.cos(pitchRad)) + (2 * inputs.overhangLength);
+    const alongRoofSide = isFrontBackDiff ? inputs.length : inputs.width;
+    roofAreaGross = (alongRoofSide + 2 * inputs.overhangLength) * rafterLength;
   } else {
     // Gable / Mansard
     const pitchRad = (inputs.roofPitchAngle * Math.PI) / 180;

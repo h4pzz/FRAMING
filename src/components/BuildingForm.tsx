@@ -20,8 +20,14 @@ import {
   Maximize2, 
   ShieldCheck,
   Ruler,
-  TrendingUp
+  TrendingUp,
+  Calculator,
+  Check,
+  AlertCircle,
+  Info,
+  Sparkles
 } from 'lucide-react';
+import { calculateMonoRoofSlopeDetails } from '../utils/calculator';
 
 interface BuildingFormProps {
   inputs: BuildingInputs;
@@ -30,6 +36,8 @@ interface BuildingFormProps {
 
 export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [calcFeedback, setCalcFeedback] = useState<string | null>(null);
+  const [showZeroDeltaPrompt, setShowZeroDeltaPrompt] = useState(false);
 
   const update = <K extends keyof BuildingInputs>(key: K, value: BuildingInputs[K]) => {
     onChange({
@@ -47,14 +55,51 @@ export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) 
     { value: 250, label: '250 мм', desc: 'Енергоефективний', badge: 'Пасивний' },
   ];
 
-  const deltaH = inputs.isUnevenWalls 
-    ? Math.abs(inputs.wallHeightHigh - inputs.wallHeight).toFixed(2)
-    : '0';
+  const monoDetails = calculateMonoRoofSlopeDetails(inputs);
 
-  const monoSpan = (inputs.highWallSide === 'front' || inputs.highWallSide === 'back') ? inputs.width : inputs.length;
-  const calculatedAngle = inputs.isUnevenWalls
-    ? ((Math.atan2(parseFloat(deltaH), monoSpan) * 180) / Math.PI).toFixed(1)
-    : inputs.roofPitchAngle;
+  const handleAutoCalculateAngle = () => {
+    const details = calculateMonoRoofSlopeDetails(inputs);
+    if (!details.hasUnevenWalls) {
+      setShowZeroDeltaPrompt(true);
+      return;
+    }
+    onChange({
+      ...inputs,
+      roofPitchAngle: details.calculatedAngle,
+      isUnevenWalls: true,
+    });
+    setCalcFeedback(
+      `✓ Кут ${details.calculatedAngle}° розраховано за висотами стін (перепад: ${(details.deltaH * 100).toFixed(0)} см, внутр. проліт: ${details.innerSpan.toFixed(2)} м)`
+    );
+    setTimeout(() => setCalcFeedback(null), 5000);
+  };
+
+  const handleApplyRecommendedDelta = () => {
+    const baseH = inputs.wallHeight || 2.4;
+    const highH = Number((baseH + 0.5).toFixed(2));
+    const newWallHeights = {
+      front: highH,
+      back: baseH,
+      left: Number(((highH + baseH) / 2).toFixed(2)),
+      right: Number(((highH + baseH) / 2).toFixed(2)),
+    };
+    const updatedInputs: BuildingInputs = {
+      ...inputs,
+      isCustomWallHeights: true,
+      isUnevenWalls: true,
+      wallHeights: newWallHeights,
+    };
+    const details = calculateMonoRoofSlopeDetails(updatedInputs);
+    onChange({
+      ...updatedInputs,
+      roofPitchAngle: details.calculatedAngle,
+    });
+    setShowZeroDeltaPrompt(false);
+    setCalcFeedback(
+      `✓ Задано перепад стін (фасад: ${highH} м, задня: ${baseH} м) та розраховано кут ${details.calculatedAngle}°`
+    );
+    setTimeout(() => setCalcFeedback(null), 5000);
+  };
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 space-y-6 shadow-xl">
@@ -394,10 +439,8 @@ export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) 
 
               {/* Automatic slope calculation banner */}
               {(() => {
-                const hF = inputs.wallHeights?.front || inputs.wallHeight;
-                const hB = inputs.wallHeights?.back || inputs.wallHeight;
-                const dH = Math.abs(hF - hB);
-                const angle = ((Math.atan2(dH, inputs.width) * 180) / Math.PI).toFixed(1);
+                const angle = monoDetails.calculatedAngle;
+                const dH = monoDetails.deltaH;
 
                 return (
                   <div className="p-3 bg-slate-900/90 rounded-xl border border-amber-500/30 text-xs text-slate-300 space-y-1.5 shadow-md shadow-amber-950/20">
@@ -410,9 +453,12 @@ export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) 
                       </span>
                     </div>
 
-                    <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
+                    <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800 gap-y-1">
                       <span>
-                        Перепад висот (Фасад - Задня): <strong className="text-white font-mono">{dH.toFixed(2)} м ({(dH * 100).toFixed(0)} см)</strong>
+                        Перепад висот: <strong className="text-white font-mono">{dH.toFixed(2)} м ({(dH * 100).toFixed(0)} см)</strong>
+                      </span>
+                      <span>
+                        Внутр. проліт: <strong className="text-white font-mono">{monoDetails.innerSpan.toFixed(2)} м</strong>
                       </span>
                       <span className={`font-mono font-bold ${Number(angle) >= 8.5 ? 'text-emerald-400' : 'text-amber-400'}`}>
                         {Number(angle) >= 8.5 ? '✅ Сток води норм (≥8.5°)' : '⚠️ Малий кут для металу (<8.5°)'}
@@ -524,34 +570,49 @@ export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) 
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mt-3">
-          {!inputs.isUnevenWalls ? (
-            <div>
-              <span className="text-xs text-slate-400 block mb-1">Кут нахилу (° градуси)</span>
+        {/* Roof Pitch Angle & Rafter Section */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-slate-400 block">Кут нахилу (° градуси)</span>
+              {inputs.roofType === 'mono' && (
+                <span className="text-[10px] text-slate-500 font-mono">
+                  {monoDetails.hasUnevenWalls ? `за стінами: ${monoDetails.calculatedAngle}°` : 'стіни однакові'}
+                </span>
+              )}
+            </div>
+
+            <div className="flex gap-2">
               <input
                 type="number"
-                min="5"
-                max="50"
+                step="0.1"
+                min="3"
+                max="60"
                 value={inputs.roofPitchAngle}
-                onChange={(e) => update('roofPitchAngle', parseInt(e.target.value) || 20)}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:border-amber-500"
+                onChange={(e) => update('roofPitchAngle', parseFloat(e.target.value) || 15)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono font-bold focus:border-amber-500 text-sm"
               />
+
+              {inputs.roofType === 'mono' && (
+                <button
+                  type="button"
+                  onClick={handleAutoCalculateAngle}
+                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl font-semibold text-xs whitespace-nowrap flex items-center gap-1.5 transition-all shadow-md shadow-amber-950/30 active:scale-95 shrink-0"
+                  title="Розрахувати кут автоматично з урахуванням висот стін та спирання крокви на нижній край верхньої обв'язки"
+                >
+                  <Calculator className="w-3.5 h-3.5" />
+                  <span>Авто°</span>
+                </button>
+              )}
             </div>
-          ) : (
-            <div>
-              <span className="text-xs text-slate-400 block mb-1">Кут нахилу даху</span>
-              <div className="w-full px-3 py-2 bg-slate-950/70 border border-slate-800 rounded-xl text-amber-400 font-mono font-bold text-sm">
-                {calculatedAngle}° <span className="text-xs text-slate-400 font-normal">(з перепаду {deltaH}м)</span>
-              </div>
-            </div>
-          )}
+          </div>
 
           <div>
             <span className="text-xs text-slate-400 block mb-1">Крокви покрівлі</span>
             <select
               value={inputs.rafterWidth}
               onChange={(e) => update('rafterWidth', parseInt(e.target.value) as 100 | 150 | 200 | 250)}
-              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:border-amber-500 text-xs"
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:border-amber-500 text-xs h-[38px]"
             >
               <option value="100">Дошка 100 мм (проліт &lt;2.2м)</option>
               <option value="150">Дошка 150 мм (проліт &lt;3.5м)</option>
@@ -560,6 +621,97 @@ export const BuildingForm: React.FC<BuildingFormProps> = ({ inputs, onChange }) 
             </select>
           </div>
         </div>
+
+        {/* Feedback message after auto-calculation */}
+        {calcFeedback && (
+          <div className="mt-2.5 p-2.5 bg-emerald-950/70 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{calcFeedback}</span>
+          </div>
+        )}
+
+        {/* Modal/Prompt if user clicks auto-calc but walls have zero delta */}
+        {showZeroDeltaPrompt && (
+          <div className="mt-2.5 p-3 bg-amber-950/60 border border-amber-500/50 rounded-xl text-xs text-amber-200 space-y-2.5 animate-fadeIn">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-white">Висоти стін зараз однакові (перепад 0 см)</p>
+                <p className="text-amber-300/90 text-[11px] mt-0.5">
+                  Для односкатного даху потрібен перепад між протилежними стінами. Бажаєте автоматично задати рекомендований перепад?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleApplyRecommendedDelta}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition-all"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Встановити рекомендований перепад (+50 см)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowZeroDeltaPrompt(false)}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition-all"
+              >
+                Закрити
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Mono Roof Structural Node Explanation (Rafter Resting on Lower Edge of Upper Plate) */}
+        {inputs.roofType === 'mono' && (
+          <div className="mt-3 p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-300 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-amber-400 flex items-center gap-1.5">
+                <Info className="w-3.5 h-3.5 text-amber-400" />
+                Вузол спирання крокви на подвійну обв'язку:
+              </span>
+              <span className="font-mono text-[11px] text-slate-400">
+                ДБН В.2.6-161 / IRC R802
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 border-t border-slate-800/80 text-[11px] font-mono">
+              <div className="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                <span className="text-slate-500 block text-[10px]">Внутрішній проліт:</span>
+                <span className="text-white font-bold">{monoDetails.innerSpan.toFixed(2)} м</span>
+                <span className="text-slate-500 block text-[9px]">(габарит {monoDetails.outerSpan.toFixed(2)}м - 2×{inputs.studWidth}мм)</span>
+              </div>
+
+              <div className="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                <span className="text-slate-500 block text-[10px]">Перепад висот (ΔH):</span>
+                <span className="text-amber-400 font-bold">{monoDetails.deltaH.toFixed(2)} м</span>
+                <span className="text-slate-500 block text-[9px]">({(monoDetails.deltaH * 100).toFixed(0)} см)</span>
+              </div>
+
+              <div className="bg-slate-900/80 p-2 rounded-lg border border-slate-800 col-span-2 sm:col-span-1">
+                <span className="text-slate-500 block text-[10px]">Розрахунковий кут:</span>
+                <span className="text-emerald-400 font-bold">{monoDetails.calculatedAngle}°</span>
+                <span className="text-slate-500 block text-[9px]">atan(ΔH / L_внутр)</span>
+              </div>
+            </div>
+
+            {monoDetails.hasUnevenWalls && Math.abs(inputs.roofPitchAngle - monoDetails.calculatedAngle) >= 0.2 && (
+              <div className="flex items-center justify-between pt-1 text-[11px] text-amber-400/90 bg-amber-500/5 p-2 rounded-lg border border-amber-500/20">
+                <span>
+                  Поточний кут ({inputs.roofPitchAngle}°) відрізняється від геометричного ({monoDetails.calculatedAngle}°).
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAutoCalculateAngle}
+                  className="px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded text-[10px] ml-2 shrink-0 transition-all"
+                >
+                  Синхронізувати
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 5. Foundation / Floor */}
